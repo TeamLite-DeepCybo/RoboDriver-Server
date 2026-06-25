@@ -1,3 +1,0 @@
-[console_scripts]
-robot-uploader = robot_data_uploader.collect_uploader:main
-
