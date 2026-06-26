@@ -558,3 +558,155 @@ def create_from_config(config_path: str | None = None) -> InternalSync:
     if config_path is None:
         config_path = Path(__file__).resolve().parent / "internal_config.yaml"
     return InternalSync(config_path)
+
+
+# ---------------------------------------------------------------------------
+# 双模式调度层：Cloud 后端适配器
+# ---------------------------------------------------------------------------
+
+
+class CloudUploadBackend:
+    """BAAI/KS3 云端上传后端，接口与 InternalSync 对齐。
+
+    内部调用 robot_data_uploader 模块，通过 KS3 分片上传到 BAAI 平台。
+    """
+
+    def __init__(self, config_path: str | Path | None = None):
+        self._config_path = Path(config_path).expanduser().resolve() if config_path else None
+        self._cfg: dict[str, Any] = {}
+
+        if self._config_path and self._config_path.exists():
+            self._cfg = _load_yaml(self._config_path)
+
+        cloud_cfg = self._cfg.get("cloud", {}) if self._cfg else {}
+
+        # 从 robot_data_uploader.config 读取环境信息（容错：依赖可能不在当前环境）
+        try:
+            import robot_data_uploader.config as _upload_cfg
+            self._server_url = cloud_cfg.get("platform_server_ip", _upload_cfg.SERVER_URL)
+            self._bucket = _upload_cfg.BUCKET_NAME
+            self._endpoint = _upload_cfg.ENDPOINT
+            self._endpoint_type = getattr(_upload_cfg, "ENDPOINT_TYPE", "unknown")
+        except Exception as e:
+            logger.warning("Cloud config load degraded: %s", e)
+            self._server_url = cloud_cfg.get("platform_server_ip", "https://roboxstudio.baai.ac.cn/api")
+            self._bucket = "baai-eai-datasets-test"
+            self._endpoint = "ks3-cn-beijing.ksyuncs.com"
+            self._endpoint_type = "fallback"
+
+    def sync_dataset(
+        self,
+        source_path: str | Path,
+        dataset_name: str,
+        *,
+        sync_images: bool = True,
+        sync_videos: bool = False,
+    ) -> SyncResult:
+        """通过 BAAI/KS3 上传数据集"""
+        import robot_data_uploader.uploader as _up
+
+        task_id = f"cloud_sync_{dataset_name}_{int(time.time())}"
+        source = Path(source_path).expanduser().resolve()
+
+        result = SyncResult(
+            task_id=task_id,
+            status="started",
+            dataset_name=dataset_name,
+            source_path=str(source),
+            target_path=f"ks3://{self._bucket}/{dataset_name}",
+            started_at=time.time(),
+        )
+
+        with _task_lock:
+            _task_registry[task_id] = result
+
+        if not source.exists():
+            result.status = "failed"
+            result.errors.append(f"源路径不存在: {source}")
+            return result
+
+        result.files_total = _count_files(source)
+        result.total_size_bytes = _count_size(source)
+        result.status = "in_progress"
+
+        try:
+            # 创建 uploader 实例（不依赖交互模式）
+            uploader = _up.RobotDataUploader(use_direct_auth=False)
+            # 尝试获取 STS 凭证
+            if hasattr(uploader, 'get_ks3_sts') and uploader.eai_token:
+                uploader.get_ks3_sts()
+
+            # 使用 batch_upload 上传目录
+            if source.is_dir():
+                uploader.batch_upload(str(source), str(dataset_name))
+            else:
+                uploader.upload_file(str(source), str(dataset_name))
+
+            result.files_synced = result.files_total
+            result.status = "completed"
+        except Exception as e:
+            result.status = "failed"
+            result.errors.append(str(e))
+            logger.exception("Cloud upload failed task_id=%s", task_id)
+        finally:
+            result.finished_at = time.time()
+            with _task_lock:
+                _task_registry[task_id] = result
+
+        return result
+
+    def test_connection(self) -> dict[str, Any]:
+        """测试 BAAI 平台连通性"""
+        import socket
+        from urllib.parse import urlparse
+
+        try:
+            host = urlparse(self._server_url).hostname or self._server_url
+            sock = socket.create_connection((host, 80), timeout=5)
+            sock.close()
+            reachable = True
+        except Exception as e:
+            reachable = False
+            logger.warning("Cloud connection test failed: %s", e)
+
+        return {
+            "method": "ks3_cloud",
+            "server_url": self._server_url,
+            "bucket": self._bucket,
+            "endpoint": self._endpoint,
+            "endpoint_type": self._endpoint_type,
+            "reachable": reachable,
+        }
+
+    # ---- 委托到 InternalSync 的静态任务管理 ----
+
+    @staticmethod
+    def get_task_status(task_id: str) -> dict | None:
+        return InternalSync.get_task_status(task_id)
+
+    @staticmethod
+    def list_tasks() -> list[dict]:
+        return InternalSync.list_tasks()
+
+
+# ---------------------------------------------------------------------------
+# 后端工厂：根据 pipeline_mode 创建合适的后端
+# ---------------------------------------------------------------------------
+
+def create_backend(
+    pipeline_mode: str = "internal",
+    config_path: str | Path | None = None,
+) -> InternalSync | CloudUploadBackend:
+    """根据 pipeline_mode 创建对应的后端实例。
+
+    Args:
+        pipeline_mode: "internal" 或 "cloud"
+        config_path: internal_config.yaml 路径
+
+    Returns:
+        InternalSync 或 CloudUploadBackend 实例
+    """
+    if pipeline_mode == "cloud":
+        return CloudUploadBackend(config_path)
+    else:
+        return create_from_config(config_path)
