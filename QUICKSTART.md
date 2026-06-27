@@ -501,6 +501,23 @@ with operating_platform_server.app.test_client() as c:
 
 ---
 
+## 12. TODO：后续开发计划
+
+### Pub-Sub → Client-Server 迁移
+
+当前 `bar_ws` FSM 通过 ROS2 Topic 控制 RoboDriver 录制。后续计划改为
+**ROS2 Service（client-server）** 模式，让 FSM 每一步都等待 RoboDriver
+确认状态后再推进，消除盲发和竞态。
+
+详见 RoboDriver 包内 `FRONTEND_COLLECTION_CONTROL_PLAN.md` 第 15 节。
+
+### BAAI 平台修复跟进
+
+BAAI 平台 `dataset_upload_task` 表 `task_id` 字段缺少默认值导致任务创建失败，
+已联系 BAAI 管理员。修复后需验证云端上传 → 平台可见全链路。
+
+---
+
 ## 附录 A：目录结构
 
 ```
