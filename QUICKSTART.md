@@ -111,6 +111,23 @@ bar_ws FSM (affirm_to_collect=true)
 
 > 手动调用 Server API 同步的方式仍然有效，见下方各模式的操作步骤。
 
+### 2.2 Server 未配置时会发生什么？
+
+如果 Server 已启动但 `internal_config.yaml`（internal 模式）或 AK/SK（cloud 模式）未配置：
+
+```
+affirm_to_collect=true
+  → 本地 episode 保存成功 ✅
+  → POST /api/dataset/sync → Server 返回 HTTP 500
+  → Coordinator 日志输出 ERROR（不是 WARNING）
+  → 数据留在本地磁盘 ✅ 永不丢失
+```
+
+**关键原则：本地落盘与管线同步解耦。** 管线配置错误不会影响数据采集。
+数据始终先安全落本地，再异步推送。如果推送失败，查看 Coordinator 日志
+中的 `_last_sync_detail` 即可定位原因，修复配置后重新手动触发 sync。
+
+
 
 ## 3. 两种模式一句话区别
 
