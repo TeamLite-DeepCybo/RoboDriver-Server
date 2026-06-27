@@ -93,6 +93,25 @@
 
 ---
 
+### 2.1 ROS2 FSM 自动桥接（新）
+
+如果你通过 `bar_ws` 的 FSM 话题控制录制（`/to_robodriver/start_collect` 等），
+RoboDriver 在收到 `affirm_to_collect=true` 后会**自动触发 Server 管线同步**：
+
+```
+bar_ws FSM (affirm_to_collect=true)
+  → RoboDriver Coordinator 保存 episode
+  → 自动 POST /api/dataset/sync (fire-and-forget)
+  → RoboDriver-Server 按 pipeline_mode 执行 local_copy / rsync / cloud
+```
+
+**前提**：RoboDriver-Server 必须在 `:8088` 上运行（`python operating_platform_server_test.py`）。
+
+如果 Server 未启动，数据留在本地磁盘，日志会输出 `Server unavailable, skipping pipeline sync trigger.`——不会丢失数据。
+
+> 手动调用 Server API 同步的方式仍然有效，见下方各模式的操作步骤。
+
+
 ## 3. 两种模式一句话区别
 
 | 模式 | 数据去哪 | 什么时候用 |
