@@ -38,7 +38,10 @@ cloud:
   is_upload: false
   upload_immadiately_gpu: false
   is_collect_upload_at_sametime: false
-  platform_server_ip: https://roboxstudio.baai.ac.cn/api
+  platform_server_ip: https://roboxstudio.baai.ac.cn
+  # BAAI 平台凭证（从 roboxstudio.baai.ac.cn 获取）
+  baai_ak: ""
+  baai_sk: ""
 
 # ----------------------------------------------------------
 # 日志

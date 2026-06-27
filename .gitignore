@@ -208,3 +208,4 @@ __marimo__/
 
 # Internal pipeline config (contains IPs/paths)
 internal_config.yaml
+baai_env.sh

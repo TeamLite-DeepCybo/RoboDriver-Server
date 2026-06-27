@@ -165,7 +165,7 @@ class InternalSync:
         # 解析路径
         tp = self._cfg.get("target_paths", {})
         self._raw_root = _resolve_path(tp.get("raw_dataset_root", ""), self._base_dir)
-        self._converted_root = _resolve_path(tp.get("converted_dataset_root", ""), self._base_dir)
+        self._converted_root = _resolve_path(tp.get("converted_dataset_root", ""), self._base_dir) if tp.get("converted_dataset_root") else None
         self._video_root = _resolve_path(tp.get("video_root", ""), self._base_dir) if tp.get("video_root") else None
 
         lp = self._cfg.get("local_paths", {})
@@ -579,6 +579,9 @@ class CloudUploadBackend:
             self._cfg = _load_yaml(self._config_path)
 
         cloud_cfg = self._cfg.get("cloud", {}) if self._cfg else {}
+        # 读取 BAAI 凭证：优先 cloud 配置段，其次环境变量
+        self._baai_ak = cloud_cfg.get("baai_ak") or os.environ.get("BAAI_AK", "")
+        self._baai_sk = cloud_cfg.get("baai_sk") or os.environ.get("BAAI_SK", "")
 
         # 从 robot_data_uploader.config 读取环境信息（容错：依赖可能不在当前环境）
         try:
@@ -629,12 +632,30 @@ class CloudUploadBackend:
         result.total_size_bytes = _count_size(source)
         result.status = "in_progress"
 
+        # 临时清除代理环境变量，确保 BAAI/KS3 直连不走本地代理
+        _saved_http_proxy = os.environ.pop("http_proxy", None)
+        _saved_https_proxy = os.environ.pop("https_proxy", None)
         try:
-            # 创建 uploader 实例（不依赖交互模式）
+            # 创建 uploader 实例并注入凭证
             uploader = _up.RobotDataUploader(use_direct_auth=False)
-            # 尝试获取 STS 凭证
-            if hasattr(uploader, 'get_ks3_sts') and uploader.eai_token:
-                uploader.get_ks3_sts()
+            # 覆写 uploader 使用的 server_url（优先使用 cloud 配置段的值）
+            if self._server_url:
+                import robot_data_uploader.config as _upload_cfg_sync
+                _upload_cfg_sync.SERVER_URL = self._server_url
+            # 强制使用公网 KS3 端点（内网端点从外部不可达）
+            import robot_data_uploader.config as _upload_cfg_sync
+            _upload_cfg_sync.ENDPOINT = 'ks3-cn-beijing.ksyuncs.com'
+            _upload_cfg_sync.ENDPOINT_TYPE = '公网（强制）'
+            if self._baai_ak and self._baai_sk:
+                token = uploader.get_eai_token(self._baai_ak, self._baai_sk)
+                if token:
+                    uploader.set_eai_token(token)
+                    uploader.get_ks3_sts()
+                    logger.info("BAAI/KS3 凭证已加载")
+                else:
+                    logger.warning("BAAI token 获取失败，上传可能无法完成")
+            else:
+                logger.warning("未配置 BAAI AK/SK，将尝试无认证上传")
 
             # 使用 batch_upload 上传目录
             if source.is_dir():
@@ -649,6 +670,10 @@ class CloudUploadBackend:
             result.errors.append(str(e))
             logger.exception("Cloud upload failed task_id=%s", task_id)
         finally:
+            if _saved_http_proxy is not None:
+                os.environ["http_proxy"] = _saved_http_proxy
+            if _saved_https_proxy is not None:
+                os.environ["https_proxy"] = _saved_https_proxy
             result.finished_at = time.time()
             with _task_lock:
                 _task_registry[task_id] = result
@@ -662,7 +687,7 @@ class CloudUploadBackend:
 
         try:
             host = urlparse(self._server_url).hostname or self._server_url
-            sock = socket.create_connection((host, 80), timeout=5)
+            sock = socket.create_connection((host, 443), timeout=5)
             sock.close()
             reachable = True
         except Exception as e:
