@@ -190,6 +190,80 @@ class InternalSync:
                 raise ValueError("target_server.user 未配置")
 
         logger.info("InternalSync 初始化完成 mode=%s host=%s", self._sync_method, self._host or "localhost")
+        logger.info("InternalSync 初始化完成 mode=%s host=%s", self._sync_method, self._host or "localhost")
+
+    def get_config_status(self) -> dict:
+        """返回 internal 模式的配置状态，用于前端/CLI 引导提示。
+
+        Returns:
+            {"mode": "internal", "sync_method": "rsync",
+             "ok": true/false,
+             "configured": ["host", "user", ...],
+             "missing": ["identity_file", ...],
+             "hints": ["source baai_env.sh", ...]}
+        """
+        configured = []
+        missing = []
+        hints = []
+
+        configured.append(f"sync_method={self._sync_method}")
+
+        if self._sync_method == "local_copy":
+            configured.append("target=localhost")
+            return {
+                "mode": "internal",
+                "sync_method": self._sync_method,
+                "ok": True,
+                "configured": configured,
+                "missing": [],
+                "hints": [],
+            }
+
+        # rsync / scp — need host, user
+        if self._host:
+            configured.append(f"host={self._host}")
+        else:
+            missing.append("target_server.host")
+            hints.append(
+                "Edit internal_config.yaml -> target_server.host "
+                "(e.g. 'fe80::...%enp14s0' for A6000 wired IPv6)"
+            )
+
+        if self._user:
+            configured.append(f"user={self._user}")
+        else:
+            missing.append("target_server.user")
+            hints.append(
+                "Edit internal_config.yaml -> target_server.user "
+                "(e.g. 'stvli' or your username on A6000)"
+            )
+
+        if self._identity:
+            configured.append("identity_file=***")
+        else:
+            missing.append("target_server.identity_file")
+            hints.append(
+                "Edit internal_config.yaml -> target_server.identity_file "
+                "(e.g. '~/.ssh/id_rsa')"
+            )
+
+        if str(self._raw_root) and str(self._raw_root) != ".":
+            configured.append(f"raw_root={self._raw_root}")
+        else:
+            missing.append("target_paths.raw_dataset_root")
+            hints.append(
+                "Edit internal_config.yaml -> target_paths.raw_dataset_root "
+                "(e.g. '~/peize/data' — replace with your own landing path)"
+            )
+
+        return {
+            "mode": "internal",
+            "sync_method": self._sync_method,
+            "ok": len(missing) == 0,
+            "configured": configured,
+            "missing": missing,
+            "hints": hints,
+        }
 
     # ---- SSH 远程操作 ----
 
@@ -596,6 +670,45 @@ class CloudUploadBackend:
             self._bucket = "baai-eai-datasets-test"
             self._endpoint = "ks3-cn-beijing.ksyuncs.com"
             self._endpoint_type = "fallback"
+
+    def get_config_status(self) -> dict:
+        """Return cloud-mode config status for guided CLI hints."""
+        configured = []
+        missing = []
+        hints = []
+
+        configured.append(f"server_url={self._server_url}")
+        configured.append(f"bucket={self._bucket}")
+
+        if self._baai_ak:
+            configured.append("ak=***")
+        else:
+            missing.append("BAAI_AK")
+            hints.append(
+                "Create baai_env.sh (gitignored) and source it: "
+                "echo 'export BAAI_AK=your-access-key' > baai_env.sh; "
+                "echo 'export BAAI_SK=your-secret-key' >> baai_env.sh; "
+                "source baai_env.sh"
+            )
+
+        if self._baai_sk:
+            configured.append("sk=***")
+        else:
+            missing.append("BAAI_SK")
+
+        hints.append(
+            "Optional: set task_id via BAAI platform web UI. "
+            "Note: BAAI task creation is currently broken — contact BAAI admin."
+        )
+
+        return {
+            "mode": "cloud",
+            "sync_method": "ks3_cloud",
+            "ok": len(missing) == 0,
+            "configured": configured,
+            "missing": missing,
+            "hints": hints,
+        }
 
     def sync_dataset(
         self,
